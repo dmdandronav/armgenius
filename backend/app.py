@@ -33,10 +33,26 @@ CORS(app)  # allow the Vite dev server (localhost:5173) to call this API
 # ---------------------------------------------------------------------------
 # Client setup — works with OpenAI, Groq, or any OpenAI-compatible API
 # ---------------------------------------------------------------------------
-client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY"),
-    base_url=os.environ.get("OPENAI_BASE_URL") or None,
-)
+_client = None
+
+
+def get_client():
+    """Lazily construct the OpenAI client.
+
+    Building it at import time raises when OPENAI_API_KEY is unset, which would
+    prevent the whole app from booting. Deferring construction lets the server
+    start and only surfaces the missing-key error on the first request that
+    actually needs the LLM.
+    """
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("OPENAI_BASE_URL") or None,
+        )
+    return _client
+
+
 MODEL = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 EMBED_MODEL = os.environ.get("EMBED_MODEL_NAME", "text-embedding-3-small")
 
@@ -122,7 +138,7 @@ def build_index():
         INDEX_PATH.write_text(json.dumps([]))
         return []
 
-    resp = client.embeddings.create(model=EMBED_MODEL, input=[r["text"] for r in records])
+    resp = get_client().embeddings.create(model=EMBED_MODEL, input=[r["text"] for r in records])
     for r, e in zip(records, resp.data):
         r["embedding"] = e.embedding
 
@@ -141,7 +157,7 @@ def retrieve(query: str, top_k: int = 3):
     records = load_index()
     if not records:
         return []
-    q_emb = client.embeddings.create(model=EMBED_MODEL, input=[query]).data[0].embedding
+    q_emb = get_client().embeddings.create(model=EMBED_MODEL, input=[query]).data[0].embedding
     scored = sorted(records, key=lambda r: cosine(q_emb, r["embedding"]), reverse=True)
     return scored[:top_k]
 
@@ -201,7 +217,7 @@ def chat():
         })
     chat_messages.extend(messages)
 
-    completion = client.chat.completions.create(
+    completion = get_client().chat.completions.create(
         model=MODEL,
         messages=chat_messages,
         temperature=0.7,
